@@ -1,125 +1,115 @@
-use dns_lookup::{ getaddrinfo, SockType, AddrInfoHints, AddrInfo, LookupErrorKind };
-use std::io::{ ErrorKind };
-use std::net::{ TcpStream };
-use std::time::{ Duration, SystemTime };
 use std::process;
-use clap::{ Arg, App };
+use std::error::Error;
+use std::io::ErrorKind;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::TcpStream;
+use std::thread;
+use std::time::{Duration, SystemTime};
+
+use clap::Clap;
+use std::convert::TryFrom;
+
+#[derive(Clap)]
+#[clap(name = "tcping")]
+struct Args {
+    #[clap(short = 'n', long, default_value = "4")]
+    count: u8,
+
+    #[clap(short, long, default_value = "1")]
+    interval: f32,
+
+    #[clap(short = 'w', long, default_value = "2")]
+    timeout: f32,
+
+    #[clap(short = '4')]
+    ipv4: bool,
+    #[clap(short = '6')]
+    ipv6: bool,
+
+    hostname: String,
+
+    #[clap(default_value = "80")]
+    port: String,
+}
+
+#[derive(PartialEq)]
+enum IpAddrKind {
+    IPv4,
+    IPv6,
+    Any,
+}
 
 fn main() {
-
-    let matches = App::new("tcping")
-        .version("0.1.0")
-        .author("guoliim")
-        .about("test tcp ping")
-        .arg(Arg::with_name("host")
-                    .short("h")
-                    .long("host")
-                    .help("host of server")
-                    .takes_value(true))
-        .arg(Arg::with_name("port")
-                    .short("p")
-                    .long("port")
-                    .alias("service")
-                    .help("service of server")
-                    .takes_value(true))
-        .arg(Arg::with_name("count")
-                    .short("c")
-                    .long("count")
-                    .help("counts of tcping")
-                    .takes_value(true))
-        .get_matches();
-
-    let host = match matches.value_of("host") {
-        Some(host) => host,
-        None => {
-            println!("cant't get server host");
+    let args = Args::parse();
+    if args.count < 1 {
+        eprintln!("count must be an positive integer");
+        process::exit(1);
+    }
+    let ip_version = match (args.ipv4, args.ipv6) {
+        (true, true) => {
+            eprintln!("ipv4 and ipv6 cannot be specified at same time");
             process::exit(1);
-        },
+        }
+        (true, false) => IpAddrKind::IPv4,
+        (false, true) => IpAddrKind::IPv6,
+        (false, false) => IpAddrKind::Any,
     };
 
-    let port = match matches.value_of("port") {
-        Some(port) => port,
-        None => "80",
+    let socket = match solve_address(&args.hostname, &args.port, ip_version) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
     };
-
-    let cnt = match matches.value_of("count") {
-        Some(count) => count.parse().unwrap(),
-        None => 8,
-    };
-
-    let sockets = match getaddrinfo(
-        Some(host),
-        Some(port),
-        Some(AddrInfoHints {
-            socktype: SockType::Stream.into(),
-            .. AddrInfoHints::default()
-        }),
-    ) {
-        Ok(sockets) => (
-            sockets
-                .collect::<std::io::Result<Vec<_>>>()
-                .unwrap()
-        ),
-        Err(err) => match err.kind() {
-            LookupErrorKind::Again => {
-                println!("Temporary failure in name resolution");
-                process::exit(1)
-            },
-            LookupErrorKind::NoName => {
-                println!("NAME or SERVICE is unknown");
-                process::exit(1)
-            },
-            LookupErrorKind::Socktype => {
-                println!("SocketType not support");
-                process::exit(1)
-            },
-            LookupErrorKind::Service => {
-                println!("Service not support");
-                process::exit(1)
-            },
-            _ => {
-                println!("There are some err");
-                process::exit(1)
-            }
-        },
-    };
-
-    for socket in sockets {
-        for _ in 0..cnt {
-            handle_tcping(&socket)
+    let timeout_duration = Duration::from_secs_f32(args.timeout);
+    for i in 0..args.count {
+        handle_tcping(&socket, timeout_duration);
+        if i != (args.count - 1) {
+            thread::sleep(Duration::from_secs_f32(args.interval));
         }
     }
 }
 
-fn handle_tcping (socket: &AddrInfo) {
+fn solve_address(host: &str, port: &str, ip_version: IpAddrKind) -> Result<SocketAddr, Box<dyn Error>> {
+    let mut address = host.to_owned();
+    if !address.contains(':') {
+        address.push(':');
+        address.push_str(port);
+    };
+    // Ok(address.to_socket_addrs()?.next().ok_or_else(Err(""))?)
+    for address in address.to_socket_addrs()? {
+        if (ip_version == IpAddrKind::IPv4) && address.is_ipv6() { continue; }
+        if (ip_version == IpAddrKind::IPv6) && address.is_ipv4() { continue; }
+        return Ok(address);
+    }
+    Err(Box::try_from("cannot resolve hostname").unwrap())
+}
 
-    let AddrInfo { sockaddr, .. } = socket;
-
+fn handle_tcping(sockaddr: &SocketAddr, timeout: Duration) {
     let sys_time = SystemTime::now();
 
-    let _stream =
-        match TcpStream::connect_timeout(sockaddr, Duration::from_millis(2000)) {
-            Ok(stream) => {
+    let result = TcpStream::connect_timeout(sockaddr, timeout);
+    let duration =
+        SystemTime::now()
+            .duration_since(sys_time)
+            .unwrap()
+            .as_millis();
+    match result {
+        Ok(_) => {
+            println!("connected to {} {}ms", sockaddr, duration);
 
-                let duration =
-                    SystemTime::now()
-                        .duration_since(sys_time)
-                        .unwrap()
-                        .as_millis();
-
-                println!("{} connected to {} {}ms", stream.local_addr().unwrap(), sockaddr, duration);
-
-                Ok(stream)
-            },
-            Err(err) => match err.kind() {
-                ErrorKind::TimedOut => {
-                    println!("connected to {} timeout", sockaddr);
-                    Err(err)
-                },
-                _ => {
-                    println!("connected to {} failed", sockaddr);
-                    Err(err)
-                },
-            },
-        };
+            // Ok(stream)
+        }
+        Err(err) => match err.kind() {
+            ErrorKind::TimedOut => {
+                println!("connected to {} timeout {}ms", sockaddr, duration);
+                // Err(err)
+            }
+            _ => {
+                println!("connected to {} failed {}ms", sockaddr, duration);
+                // Err(err)
+            }
+        },
+    };
 }
