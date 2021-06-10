@@ -13,11 +13,8 @@ jobs:
           - x86_64-unknown-linux-gnu
           - i686-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
-          - x86_64-unknown-freebsd
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
-          - i686-pc-windows-msvc
+          - mips-unknown-linux-gnu
+          - x86_64-pc-windows-gnu
     steps:
       - uses: actions/checkout@v2
 
@@ -31,11 +28,11 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --release --target=${{ matrix.target }}
+          args: --release --target=${{ matrix.target }} 
 
       - uses: actions/upload-artifact@v2
         with:
-          name: executable-${{ matrix.target }}
+          name: target-${{ matrix.target }}
           path: |
-            target/release/tcping
-            target/release/tcping.exe
+            target/${{ matrix.target }}/release/tcping
+            target/${{ matrix.target }}/release/tcping.exe
