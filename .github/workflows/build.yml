@@ -1,4 +1,4 @@
-on: [ push, pull_request ]
+on: [push, pull_request]
 
 name: Cross-compile
 
@@ -10,11 +10,9 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - x86_64-unknown-linux-gnu
-          - i686-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - mips-unknown-linux-gnu
-          - x86_64-pc-windows-gnu
+          - x86_64-unknown-linux-gnu # linux_x86-64
+          - aarch64-unknown-linux-gnu # linux_arm64
+          - x86_64-pc-windows-gnu # windows_x86-64
     steps:
       - uses: actions/checkout@v2
 
@@ -28,7 +26,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --release --target=${{ matrix.target }} 
+          args: --release --target=${{ matrix.target }}
 
       - uses: actions/upload-artifact@v2
         with:

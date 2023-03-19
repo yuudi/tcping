@@ -1,34 +1,44 @@
-use std::process;
 use std::error::Error;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::net::TcpStream;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use clap::Clap;
-use std::convert::TryFrom;
+use clap::Parser;
 
-#[derive(Clap)]
-#[clap(name = "tcping")]
+#[derive(Parser)]
+#[command()]
 struct Args {
-    #[clap(short = 'n', long, default_value = "4")]
-    count: u8,
+    /// Number of pings to send
+    #[arg(short = 'c', long, default_value = "4")]
+    count: u32,
 
-    #[clap(short, long, default_value = "1")]
+    /// Ping forever
+    #[arg(short = 't', long, default_value = "false", conflicts_with = "count")]
+    forever: bool,
+
+    /// Interval between pings
+    #[arg(short, long, default_value = "1")]
     interval: f32,
 
-    #[clap(short = 'w', long, default_value = "2")]
+    /// Timeout for each ping
+    #[arg(short = 'w', long, default_value = "2")]
     timeout: f32,
 
-    #[clap(short = '4')]
+    /// Use IPv4
+    #[arg(short = '4', conflicts_with = "ipv6")]
     ipv4: bool,
-    #[clap(short = '6')]
+    /// Use IPv6
+    #[arg(short = '6')]
     ipv6: bool,
 
+    /// Hostname or IP address
     hostname: String,
 
-    #[clap(default_value = "80")]
+    /// Port number
+    #[arg(default_value = "80")]
     port: String,
 }
 
@@ -63,6 +73,12 @@ fn main() {
         }
     };
     let timeout_duration = Duration::from_secs_f32(args.timeout);
+    if args.forever {
+        loop {
+            handle_tcping(&socket, timeout_duration);
+            thread::sleep(Duration::from_secs_f32(args.interval));
+        }
+    }
     for i in 0..args.count {
         handle_tcping(&socket, timeout_duration);
         if i != (args.count - 1) {
@@ -71,30 +87,71 @@ fn main() {
     }
 }
 
-fn solve_address(host: &str, port: &str, ip_version: IpAddrKind) -> Result<SocketAddr, Box<dyn Error>> {
-    let mut address = host.to_owned();
-    if !address.contains(':') {
-        address.push(':');
-        address.push_str(port);
-    };
-    // Ok(address.to_socket_addrs()?.next().ok_or_else(Err(""))?)
-    for address in address.to_socket_addrs()? {
-        if (ip_version == IpAddrKind::IPv4) && address.is_ipv6() { continue; }
-        if (ip_version == IpAddrKind::IPv6) && address.is_ipv4() { continue; }
-        return Ok(address);
+fn solve_address(
+    host: &str,
+    port: &str,
+    ip_version: IpAddrKind,
+) -> Result<SocketAddr, Box<dyn Error>> {
+    // check if host contains exactly one ":"
+    let mut colon_count = 0;
+    for c in host.chars() {
+        if c == ':' {
+            colon_count += 1;
+            if colon_count > 1 {
+                break;
+            }
+        }
     }
-    Err(Box::try_from("cannot resolve hostname").unwrap())
+
+    let (host_local, port_local) = if colon_count == 1 {
+        // split host and port
+        let position = host.find(':').unwrap();
+        let h = &host[0..position];
+        let p = &host[position + 1..];
+        // let mut split = host.split(":");
+        // let h = split.next().unwrap();
+        // let p = split.next().unwrap();
+        (h, p)
+    } else if host.contains("]:") {
+        let position = host.rfind(':').unwrap();
+        let h = &host[1..position - 1]; // remove '[' and ']'
+        let p = &host[position + 1..];
+        (h, p)
+    } else if host.len() >= 2
+        && host.as_bytes()[0] == b'['
+        && host.as_bytes()[host.len() - 1] == b']'
+    {
+        let h = &host[1..host.len() - 1];
+        (h, port)
+    } else {
+        (host, port)
+    };
+
+    let port_num: u16 = port_local.parse()?;
+
+    for socket in (host_local, port_num).to_socket_addrs()? {
+        if (ip_version == IpAddrKind::IPv4) && socket.is_ipv6() {
+            continue;
+        }
+        if (ip_version == IpAddrKind::IPv6) && socket.is_ipv4() {
+            continue;
+        }
+        return Ok(socket);
+    }
+    Err(Box::new(std::io::Error::new(
+        ErrorKind::Other,
+        "cannot resolve hostname",
+    )))
 }
 
 fn handle_tcping(sockaddr: &SocketAddr, timeout: Duration) {
     let sys_time = SystemTime::now();
 
     let result = TcpStream::connect_timeout(sockaddr, timeout);
-    let duration =
-        SystemTime::now()
-            .duration_since(sys_time)
-            .unwrap()
-            .as_millis();
+    let duration = SystemTime::now()
+        .duration_since(sys_time)
+        .unwrap()
+        .as_millis();
     match result {
         Ok(_) => {
             println!("connected to {} {}ms", sockaddr, duration);
